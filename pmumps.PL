@@ -1,12 +1,8 @@
 my $script = <<'END_OF_SCRIPT';
 ~startperl~
 
-use Mumps;
+use Language::Mumps qw(Config Runtime);
 use Getopt::Std;
-
-require "/etc/pmumps/cf" if -f "/etc/pmumps.cf";
-require "~/.pmumps" if -f "~/.pmumps";
-import Mumps($db, $ser);
 
 getopts("ftco:");
 
@@ -26,7 +22,7 @@ $fn = $filename;
 $fn .= ".mps" unless ($filename =~ /\./ || -f $filename);
 die "$filename not found" unless (-f $fn);
 
-$Mumps::forgiveful = $opt_f;
+$Language::Mumps::forgiveful = $opt_f;
 
 if ($opt_t) {
     @out = split(/\./, $fn);
@@ -36,7 +32,7 @@ if ($opt_t) {
 
     die "Can't create $outf" if ($outf eq $fn);
 
-    Mumps::translate($fn, $outf);
+    Language::Mumps::translate($fn, $outf);
     exit;
 }
 
@@ -48,7 +44,7 @@ if ($opt_c) {
     $srct = (stat($fn))[9];
     $dstt = (stat($out))[9];
     if ($srct > $dstt) {
-        Mumps::translate($fn, $out);
+        Language::Mumps::translate($fn, $out);
     }
     $@ = undef;
     do $out;
@@ -56,14 +52,14 @@ if ($opt_c) {
     exit;
 }
 
-Mumps::interprete($fn);
+Language::Mumps::interprete($fn);
 exit;
 
 __END__
 
 =head1 NAME
 
-pmumps   - Stand alone ionterpreter for Mumps.pm
+pmumps   - Stand alone ionterpreter for Language::Mumps
 
 =head1 SYNOPSIS
 
@@ -108,7 +104,7 @@ Ariel Brosh, B<schop@cpan.org>
 
 =head1 SEE ALSO
 
-L<Mumps>, L<DB_File>.
+L<Language::Mumps>, L<DB_File>.
 
 END_OF_SCRIPT
 use Config;
@@ -123,3 +119,15 @@ if (!(open(FILE, ">$file"))  ||
 }
 print "Extracted $file from ",__FILE__," with variable substitutions.\n";
 
+if ( ! -f "/etc/pmumps.cf") {
+
+$@ = undef;
+eval { require File::Copy; import File::Copy; };
+
+die "Can't copy configuration: $@" if $@;
+
+copy("mumps.cfg", "/etc/pmumps.cf");
+
+print "Created /etc/pmups.cf\n";
+
+}

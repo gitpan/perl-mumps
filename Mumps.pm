@@ -3,16 +3,17 @@
 # However, any modifications should be notified to the author
 # Email: mumps@atheist.org.il
 
-$VERSION = 1.04;
 
-package Mumps;
+package Language::Mumps;
+$VERSION = 1.05;
 use Fcntl;
 use strict vars;
 use vars qw($FETCH $STORE $DB $SER $IMPORT @TYING $xpos $ypos
   %symbols $selected_io $flag @handlers @xreg @yreg
   $curses_inside $varstack %RES $RESKEYS %COMMANDS $scope_do
   %FUNCTIONS %FUNS @tmpvars $tmphash $infun $scopes @stack
-  @program %bookmarks $lnum $forgiveful $forscope %dbs);
+  @program %bookmarks $lnum $forgiveful $forscope %dbs
+  $VERSION);
 
 %COMMANDS = qw(B BREAK C CLOSE D DO E ELSE F FOR G GOTO HALT HALT
                H HANG I IF J JOB K KILL L LOCK O OPEN Q QUIT
@@ -96,7 +97,7 @@ sub m2pl {
     }
 
     unless ($line =~ /\t/) {
-        return "Mumps::write('$line');\n";
+        return "Language::Mumps::write('$line');\n";
     }
 
     &resetvars;
@@ -164,7 +165,7 @@ sub compile {
     $lnum = 0;
     my @code = map {++$lnum; "# $lnum) $_\n" . &m2pl($_);} @lines;
     die "Unclosed brackets" if ($scopes);
-    join("", "use Mumps qw(Runtime $IMPORT);\nno strict;\n",  @code,
+    join("", "use Language::Mumps qw(Runtime $IMPORT);\nno strict;\n",  @code,
               "### end\n", &m2pl("\tQUIT"));
 }
 
@@ -219,7 +220,7 @@ sub CLOSE ($) {
     return $code . <<EOM;
 foreach ($var) {
     die "Can't CLOSE unit 5" if (\$_ == 5);
-    close($Mumps::handlers[\$_]);
+    close($Language::Mumps::handlers[\$_]);
 }
 EOM
 }
@@ -229,25 +230,25 @@ sub DO ($) {
         ++$scope_do;
         my $lbl = &nextvar("d$scope_do");
         return <<EOM;
-push(\@Mumps::stack, '$lbl');
+push(\@Language::Mumps::stack, '$lbl');
 goto __lbl_Mumps_$1;
 $lbl:
 EOM
     }
     if ($_[0] =~ /^[\@"]/) {
         my ($code, $var) = &makeexp($_[0]);
-        return $code . "Mumps::interprete($var);";
+        return $code . "Language::Mumps::interprete($var);";
     }
     if ($_[0] =~ /^\$\$/) {
         my ($code, $var) = &makeexp($_[0]);
-        return $code . "$Mumps::flag = $var ? 1 : undef;";
+        return $code . "\$Language::Mumps::flag = $var ? 1 : undef;";
     }
     $_[0] =~ s/\s.*$//;
     die "Illegal argument for DO $_[0]";
 }
 
 sub ELSE ($) {
-    my $code = "unless ($Mumps::flag) {";
+    my $code = "unless (\$Language::Mumps::flag) {";
     if ($_[0] =~ s/^\{\s*//) {
         $scopes++;
         return $code;
@@ -346,7 +347,7 @@ sub HANG ($) {
 sub IF ($) {
     die "Condition expected in IF" unless ($_[0]);
     my ($code, $val) = &makeexp($_[0]);
-    my $condcode = $code . "\$Mumps::flag = $val;\nif (\$Mumps::flag) {\n";
+    my $condcode = $code . "\$Language::Mumps::flag = $val ? 1 : undef;\nif (\$Language::Mumps::flag) {\n";
     $_[0] =~ s/^\s*//;
     die "Code expected in IF" unless ($_[0]);
     if ($_[0] =~ s/^\{//) {
@@ -364,7 +365,7 @@ sub JOB {
 
 sub KILL ($) {
     unless ($_[0]) {
-        return "%Mumps::symbols = ()";
+        return "%Language::Mumps::symbols = ()";
     }
     my $rev;
     my $thecode;
@@ -382,15 +383,15 @@ sub KILL ($) {
         my $addr = $var->addr;
         $thecode .= $code . (!$rev
                 ?  $var->purge . "\n"
-                : "&Mumps::moveimage(\\\%Mumps::symbol, \\\%$tmptbl, " .
+                : "&Language::Mumps::moveimage(\\\%Language::Mumps::symbol, \\\%$tmptbl, " .
                         "$addr);\n"
            );
     }
     if ($rev) {
         $thecode .= <<EOM;
-\%Mumps::symbol = ();
+\%Language::Mumps::symbol = ();
 foreach (keys \%$tmptbl) {
-    \$Mumps::symbol{\$_} = \$$tmptbl\{\$_};
+    \$Language::Mumps::symbol{\$_} = \$$tmptbl\{\$_};
 }
 EOM
     }
@@ -401,10 +402,10 @@ EOM
 sub LOCK ($) {
     unless ($_[0]) {
     return <<EOM;
-foreach (\@Mumps::locks) {
+foreach (\@Language::Mumps::locks) {
     flock(\$_, 8);
 }
-\@Mumps::locks = ();
+\@Language::Mumps::locks = ();
 EOM
     }
     my ($code, $var) = &makevar($_[0]);
@@ -416,7 +417,7 @@ return <<EOM;
 $tdb = $ext;
 $fd = $tdb->fd;
 die "LOCK: flock: $!" unless flock($fd, 6);
-push(\@Mumps::locks, $fd);
+push(\@Language::Mumps::locks, $fd);
 EOM
 }
 
@@ -434,17 +435,17 @@ die "Can't reOPEN unit 5" if ($opennum == 5);
 ($ofn, $omet) = $tokens = split(/\\//, $var2);
 die "Illegal OPEN string" unless (scalar($tokens) == 2 &&
     grep /^$omet\$/i, qw(NEW OLD APPEND));
-\$Mumps::handlers[$opennum] = "F" . $opennum;
-open(\$Mumps::handlers[$opennum],
+\$Language::Mumps::handlers[$opennum] = "F" . $opennum;
+open(\$Language::Mumps::handlers[$opennum],
     {NEW => '>', APPEND => '>>', OLD=> '<'}->{uc($omet)} . $ofn);
-\$Mumps::handlers[$opennum] = \*{\$Mumps::handlers[$opennum]};
+\$Language::Mumps::handlers[$opennum] = \*{\$Language::Mumps::handlers[$opennum]};
 EOM
 }
 
 sub QUIT {
     return <<EOM;
-if (\@Mumps::stack) {
-    goto &{pop \@Mumps::stack};
+if (\@Language::Mumps::stack) {
+    goto &{pop \@Language::Mumps::stack};
 }
 exit;
 EOM
@@ -455,22 +456,22 @@ sub READ ($) {
     while ($_[0] && $_[0] !~ /^\s/) {
         die "Comma expected in READ" unless (!$done++ || $_[0] =~ s/^,//);
         if ($_[0] =~ /^\*?[a-z^]/i) {
-            my $icode = "&Mumps::read";
+            my $icode = "&Language::Mumps::read";
             if ($_[0] =~ s/^\*//) {
-                $icode = "ord(&Mumps::readkey)";
+                $icode = "ord(&Language::Mumps::readkey)";
             }
             my ($code, $lvar) = &makevar($_[0]);
             my $var = $lvar->lval;
             $result .= "\$SIG{ALRM} = sub {die 1;}; \$\@ = undef; alarm $timeout;\n"
                 . "eval {\n" if ($timeout);
             $result .= "$var = $icode;\n";
-            $result .= "};\n\$SIG{ALRM} = undef; alarm 0;\n\$Mumps::flag = (\$\@ ? undef : 1);\n" if ($timeout);
+            $result .= "};\n\$SIG{ALRM} = undef; alarm 0;\n\$Language::Mumps::flag = (\$\@ ? undef : 1);\n" if ($timeout);
             $timeout = undef;
         } elsif ($_[0] =~ s/^\?(\d+)//) {
             $timeout = $1;
         } else {
             my ($code, $var) = &makeexp($_[0]);
-            $result .= $code . "&Mumps::write($var);\n";
+            $result .= $code . "&Language::Mumps::write($var);\n";
         }
     }
     chomp $result;
@@ -495,11 +496,11 @@ sub SET ($) {
 sub USE ($) {
     my ($code, $val) = &makeexp($_[0]);
     return $code . <<EOM;
-\$Mumps::xreg[\$Mumps::selected_io] = \$Mumps::xpos;
-\$Mumps::yreg[\$Mumps::selected_io] = \$Mumps::ypos;
-\$Mumps::selected_io = $val;
-\$Mumps::xpos = \$Mumps::xreg[\$Mumps::selected_io];";
-\$Mumps::ypos = \$Mumps::yreg[\$Mumps::selected_io];";
+\$Language::Mumps::xreg[\$Language::Mumps::selected_io] = \$Language::Mumps::xpos;
+\$Language::Mumps::yreg[\$Language::Mumps::selected_io] = \$Language::Mumps::ypos;
+\$Language::Mumps::selected_io = $val;
+\$Language::Mumps::xpos = \$Language::Mumps::xreg[\$Language::Mumps::selected_io];";
+\$Language::Mumps::ypos = \$Language::Mumps::yreg[\$Language::Mumps::selected_io];";
 EOM
 }
 
@@ -511,7 +512,7 @@ sub WRITE {
     my ($code, $val) = &makelist($_[0]);
     return $code . <<EOM;
 foreach ($val) {
-    &Mumps::write(\$_);
+    &Language::Mumps::write(\$_);
 }
 EOM
 }
@@ -529,7 +530,7 @@ EOM
 sub ZP ($) {
     my $line = $_[0];
     $_[0] = '';
-    return "\$Mumps::flag = ($line) ? 1 : undef;";
+    return "\$Language::Mumps::flag = ($line) ? 1 : undef;";
 }
 
 sub ZD ($) {
@@ -547,7 +548,7 @@ sub ZFUNCTION ($) {
       @tmpvars = @tokens;
       my $code .= "sub $fun {\nmy \%$tmphash;\n";
       foreach (@tokens) {
-          my $obj = new Mumps::var;
+          my $obj = new Language::Mumps::var;
           $obj->name($_);
           my $var = $obj->lval;
           $code .= "\$$tmphash\{'$_'} = $var;\n$var = shift;\n";
@@ -559,7 +560,7 @@ sub ZRETURN ($) {
     die "Not in a function in ZRETURN" unless ($infun--);
     my ($code, $var) = &makeexp($_[0]);
     foreach (@tmpvars) {
-          my $obj = new Mumps::var;
+          my $obj = new Language::Mumps::var;
           $obj->name($_);
           my $var = $obj->lval;
           $code .= "$var =\$$tmphash\{'$_'}\n";
@@ -576,17 +577,17 @@ sub makevar2 ($$) {
     my ($code, $obj, $val, $var, $isfun, $extra);
     ++$_[1];
     if ($_[0] =~ s/^\$//) {
-        $obj = new Mumps::Func;
+        $obj = new Language::Mumps::Func;
         $isfun = 1;
         $extra = '$';
     } elsif ($_[0] =~ s/^\^//) {
-        $obj = new Mumps::Database;
+        $obj = new Language::Mumps::Database;
     } elsif ($_[0] =~ s/^\&//) {
-        $obj = new Mumps::Freevar;
+        $obj = new Language::Mumps::Freevar;
     } else {
         $extra = '%';
         $_[0] =~ s/^\@//;
-        $obj = new Mumps::Var;
+        $obj = new Language::Mumps::Var;
     }
     die "Illegal array name" unless ($_[0] =~ /[a-z$extra]/i);
     $_[0] =~ s/^([a-z$extra]\w*)//i;
@@ -601,9 +602,10 @@ sub makevar2 ($$) {
         }
         if ($alias =~ s/^(\$)//) {
               ($code, $var) = &makelist2($_[0], $_[1], $_[2] + 1);
-              bless $obj, 'Mumps::Primitive';
+              bless $obj, 'Language::Mumps::Primitive';
               goto regular;
         }
+        $alias =~ tr/a-z/A-Z/;
         my $opt = $FUNS{$alias};
         die "Illegal function $alias" unless (@$opt);
         my $line;
@@ -625,6 +627,7 @@ regular:
         $obj->list($var);
         die "No closing brackets" unless ($_[0] =~ s/^\)//);
     } elsif ($isfun) {
+        $alias =~ tr/a-z/A-Z/;
         my $opt = $FUNS{$alias};
         die "Illegal function $alias" unless (@$opt);
         my $line;
@@ -796,7 +799,7 @@ sub makelist2 ($$) {
                     my ($lbl, $off) = split(/\+/, $1);
                     $off *= 1;
                     my $var = &nextvar('$');
-                    ("$var = &Mumps::list('$lbl', $off);\n", $var);}
+                    ("$var = &Language::Mumps::list('$lbl', $off);\n", $var);}
                   );
         my ($code, $val) = &{$procs{$typ}}($_[0], $_[1], $_[2]);
         $result .= $code . "push($var, $val);\n";
@@ -886,7 +889,7 @@ sub curse {
 }
 
 sub cls {
-    if ($Mumps::selected_io == 5) {
+    if ($Language::Mumps::selected_io == 5) {
         &curse;
         Curses::clear;
     } else {
@@ -946,35 +949,53 @@ sub tab {
 sub import {
     my $class = shift;
     my $state;
+
     foreach $state (@_) {
         if ($state eq "Runtime") {
-            tie %symbols, 'Mumps::Tree';
-            tie %dbs, 'Mumps::Forest';
+            tie %symbols, 'Language::Mumps::Tree';
+            tie %dbs, 'Language::Mumps::Forest';
             $selected_io = 5;
-        }
-        if ($state =~ /^[SNG]?DBM?_File$/) {
+        } elsif ($state =~ /^[SNG]?DBM?_File$/) {
             $@ = undef;
             eval "require $state; import $state;";
             die $@ if ($@);
             @TYING = (O_RDWR|O_CREAT, 0644,
-                 ($state eq 'DB_File') ? ($DB_File::DB_FILE) : ());
+                 ($state eq 'DB_File') ? ($DB_File::DB_HASH) : ());
             $DB = $state;
-        }
-        if ($state eq 'Data::Dumper') {
+        } elsif ($state eq 'Data::Dumper') {
             $@ = undef;
             eval "require $state; import $state;";
             die $@ if ($@);
             $FETCH = sub {no strict; eval $_[0];};
             $STORE = \&Data::Dumper::Dumper;
             $SER = $state;
-        }
-        if ($state eq 'FreezeThaw' || $state eq 'Storable') {
+        } elsif ($state eq 'FreezeThaw' || $state eq 'Storable') {
             $@ = undef;
             eval "require $state; import $state;";
             die $@ if ($@);
             $FETCH = \&{"$SER\::thaw"};
             $STORE = \&{"$SER\::freeze"};
             $SER = $state;
+        } elsif ($state eq 'XML') {
+            $@ = undef;
+            eval "require XML::Parser; import XML::Parser;";
+            eval "require XML::Dumper; import XML::Dumper;";
+            die $@ if ($@);
+            $Language::Mumps::Pool::XML = new XML::Dumper;
+            $FETCH = sub { 
+                my $xml = shift;
+                return undef unless ($xml);
+                my $parser = new XML::Parser(Style => Tree);
+                my $tree = $parser->parse($xml);
+                $Language::Mumps::Pool::XML->xml2pl($tree); };
+            $STORE = sub { $Language::Mumps::Pool::XML->pl2xml(shift); };
+            $SER = $state;
+        } elsif ($state eq 'Config') {
+            require "/etc/pmumps.cf" if (-f "/etc/pmumps.cf");
+            require "~/.pmumps" if (-f "~/.pmumps");
+            import Language::Mumps ($DB, $SER);
+        } else {
+            die "Unrecognized option $state";
         }
     }
     $IMPORT = join(" ", grep /./, ($DB, $SER));
@@ -982,10 +1003,14 @@ sub import {
 
 sub dbs {
     my $db = shift;
-    my $dbt = "Mumps::DB::_$db";
-    my $dbf = "Mumps::DB::Back::_$db";;
+    my $dbt = "Language::Mumps::DB::_$db";
+    my $dbf = "Language::Mumps::DB::Back::_$db";;
+    unless (-d "global") { 
+        mkdir "global", 0755 || die "Can't create global/: $!";
+    }
+    die "You must configure database storage" unless ($DB);
     tie(%$dbf, $DB, "global/$db.db", @TYING) || die "DB: $!";
-    my $t = tie %$dbt, 'Mumps::Tree', \%$dbf, $FETCH,
+    my $t = tie %$dbt, 'Language::Mumps::Tree', \%$dbf, $FETCH,
         $STORE;
     \%$dbt;
 }
@@ -1000,7 +1025,7 @@ sub moveimage {
     }
 }
 
-package Mumps::Tree;
+package Language::Mumps::Tree;
 
 sub CLEAR {
     my $self = shift;
@@ -1103,7 +1128,7 @@ sub TIEHASH {
     bless $self, $class;
 }
 
-package Mumps::Entity;
+package Language::Mumps::Entity;
 
 sub new {
     bless {}, shift;
@@ -1158,20 +1183,20 @@ sub sig {
     "(bless [" . $self->hash . ", " . $self->addr . "], 'varsig')";
 }
 
-package Mumps::Var;
+package Language::Mumps::Var;
 use vars qw(@ISA);
-@ISA = qw(Mumps::Entity);
+@ISA = qw(Language::Mumps::Entity);
 
 
 sub purge {
     my $self = shift;
     my $list = $self->list;
     my $name = $self->name;
-    "delete \$Mumps::symbols{'$name', $list};";
+    "delete \$Language::Mumps::symbols{'$name', $list};";
 }
 
 sub hash {
-    "Mumps::symbols";
+    "Language::Mumps::symbols";
 }
 
 sub addr {
@@ -1181,9 +1206,9 @@ sub addr {
     $self->isatom ? "'$name'" : qq!join("\\0", '$name', $list)!;
 }
 
-package Mumps::Primitive;
+package Language::Mumps::Primitive;
 use vars qw(@ISA $CASE);
-@ISA = qw(Mumps::Entity);
+@ISA = qw(Language::Mumps::Entity);
 $CASE = 1;
 
 sub lval {
@@ -1197,27 +1222,27 @@ sub rval {
     "$name($list);";
 }
 
-package Mumps::Database;
+package Language::Mumps::Database;
 use vars qw(@ISA);
-@ISA = qw(Mumps::Entity);
+@ISA = qw(Language::Mumps::Entity);
 
 sub purge {
     my $self = shift;
     my $list = $self->list;
     my $name = $self->name;
-    "delete \$Mumps::dbs{'$name'}->{$list}";
+    "delete \$Language::Mumps::dbs{'$name'}->{$list}";
 }
 
 sub getdb {
     my $self = shift;
     my $name = $self->name;
-    "tied(\%{tied(\$Mumps::dbs{'$name'})->{'hash'}})";
+    "tied(\%{tied(\$Language::Mumps::dbs{'$name'})->{'hash'}})";
 }
 
 sub hash {
     my $self = shift;
     my $name = $self->name;
-    "\$Mumps::dbs{'$name'}";
+    "\$Language::Mumps::dbs{'$name'}";
 }
 
 sub addr {
@@ -1226,9 +1251,9 @@ sub addr {
     qq!join("\\0", $list)!;
 }
 
-package Mumps::Freevar;
+package Language::Mumps::Freevar;
 use vars qw(@ISA $CASE);
-@ISA = qw(Mumps::Entity);
+@ISA = qw(Language::Mumps::Entity);
 $CASE = 1;
 
 sub lval {
@@ -1248,9 +1273,9 @@ sub addr {
     qq!join("\\0", $list)!;
 }
 
-package Mumps::Func;
+package Language::Mumps::Func;
 use vars qw(@ISA @zwi_tokens);
-@ISA = qw(Mumps::Entity);
+@ISA = qw(Language::Mumps::Entity);
 
 sub prot {
     my $self = shift;
@@ -1262,7 +1287,7 @@ sub lval {
     my $self = shift;
     my $name = $self->name;
     my $prot = $self->prot;
-    my $opt = $Mumps::FUNS{$name};
+    my $opt = $Language::Mumps::FUNS{$name};
     my $rec;
     foreach $rec (@$opt) {
         last if ($rec->{'prot'} eq $prot);
@@ -1275,7 +1300,7 @@ sub rval {
     my $self = shift;
     my $name = $self->name;
     my $list = $self->list;
-    "&Mumps::Func::$name($list)";
+    "&Language::Mumps::Func::$name($list)";
 }
 
 
@@ -1326,11 +1351,11 @@ sub HOROLOG {
 }
 
 sub IO {
-    $Mumps::selected_io;
+    $Language::Mumps::selected_io;
 }
 
 sub lIO {
-    '$Mumps::selected_io';
+    '$Language::Mumps::selected_io';
 }
 
 sub JOB {
@@ -1355,6 +1380,7 @@ sub NEXT {
     my @tokens = split(/\0/, $addr);
     my $right = pop @tokens;
     my @sons = sort (tied(%$hash)->query(join("\0", @tokens)));
+    return -1 unless (@sons);
     return $sons[0] if ($right == -1);
     foreach (@sons) {
         return $_ if ($_ gt $right);
@@ -1387,12 +1413,12 @@ sub PIECE {
 
 sub lPIECE {
     my $list = shift;
-    "\${&Mumps::Func::tiePIECE($list)}";
+    "\${&Language::Mumps::Func::tiePIECE($list)}";
 }
 
 sub tiePIECE {
     my $scalar;
-    tie $scalar, 'Mumps::Piece', @_;
+    tie $scalar, 'Language::Mumps::Piece', @_;
     \$scalar;
 }
 
@@ -1406,11 +1432,11 @@ sub SELECT {
 }
 
 sub TEST {
-    $Mumps::flag;
+    $Language::Mumps::flag;
 }
 
 sub lTEST {
-    '$Mumps::flag';
+    '$Language::Mumps::flag';
 }
 
 sub TEXT {
@@ -1418,11 +1444,11 @@ sub TEXT {
 }
 
 sub X {
-    \$Mumps::xreg[\$Mumps::selected_io]
+    \$Language::Mumps::xreg[\$Language::Mumps::selected_io]
 }
 
 sub Y {
-    \$Mumps::yreg[\$Mumps::selected_io]
+    \$Language::Mumps::yreg[\$Language::Mumps::selected_io]
 }
 
 sub ZAB {
@@ -1440,34 +1466,37 @@ sub ZB {
 sub ZCD {
     my $fn = shift || substr(time, 0, 8) . ".dmp";
     my $forest = {};
+    $! = undef;
     foreach ((glob "global/*.db"), (glob "global/*.db.*")) {
         s|^global/||;
-        s/\.db.*$//;
-        next if ($forest->{$_});
-        $forest->{$_} = {%{$Mumps::dbs{$_}}};
+        s/\.db(\..*)?$//;
+#        next if ($forest->{$_});
+        eval {
+            $forest->{$_} = {%{$Language::Mumps::dbs{$_}}};
+        };
     }
     open(DUMP, ">$fn");
-    print DUMP &$Mumps::STORE($forest);
+    print DUMP &$Language::Mumps::STORE($forest);
     close(DUMP);
-    %Mumps::dbs = ();
-    !$!;
+    %Language::Mumps::dbs = ();
+    $fn;
 }
 
 sub ZCL {
     my $fn = shift || "dump";
-    %Mumps::dbs = ();
+    %Language::Mumps::dbs = ();
     open(LOAD, $fn);
     binmode LOAD;
     my $buffer;
     while (read(LOAD, $buffer, 8192, length($buffer))) {}
     close(LOAD);
-    my $forest = &$Mumps::FETCH($buffer);
+    my $forest = &$Language::Mumps::FETCH($buffer);
     undef $buffer;
     foreach (keys %$forest) {
         unlink "global/$_.db";
-        %{$Mumps::dbs{$_}} = %{$forest->{$_}};
+        %{$Language::Mumps::dbs{$_}} = %{$forest->{$_}};
     }
-    %Mumps::dbs = ();
+    %Language::Mumps::dbs = ();
 }
 
 sub ZD {
@@ -1537,12 +1566,12 @@ sub ZDBI {
     my $sth = $dbh->prepare($query) || die $DBI::errstr;
     $sth->execute || die $DBI::errstr;
     my ($i, $rec, $glb);
-    $glb = $Mumps::dbs{$1} if ($ary =~ /^\^(.*)$/);
+    $glb = $Language::Mumps::dbs{$1} if ($ary =~ /^\^(.*)$/);
     
     while ($rec = $sth->fetchrow_array) {
-        $Mumps::symbol{"%tpl", ++$i} = join("\\", @$rec);
+        $Language::Mumps::symbol{"%tpl", ++$i} = join("\\", @$rec);
         unless ($glb) {
-            $Mumps::symbol{$ary, @$rec} = $i;
+            $Language::Mumps::symbol{$ary, @$rec} = $i;
         } else {
             $glb->{@$rec} = $i;
         }
@@ -1584,7 +1613,7 @@ sub ZR {
 }
 
 sub ZS {
-    &Mumps::write(`$_[0]`);
+    &Language::Mumps::write(`$_[0]`);
 }
 
 sub ZSQR {
@@ -1593,7 +1622,7 @@ sub ZSQR {
 }
 
 sub ZT {
-    my $file = ($Mumps::selected_io == 5) ? \*STDIN : $Mumps::handlers[$Mumps::selected_io];
+    my $file = ($Language::Mumps::selected_io == 5) ? \*STDIN : $Language::Mumps::handlers[$Language::Mumps::selected_io];
     tell($file);
 }
 
@@ -1613,7 +1642,7 @@ sub ZWN {
     shift @zwi_tokens;
 }
 
-package Mumps::Piece;
+package Language::Mumps::Piece;
 
 sub TIESCALAR {
     my $class = shift;
@@ -1622,7 +1651,7 @@ sub TIESCALAR {
 
 sub FETCH {
     my $self = shift;
-    &Mumps::Func::PIECE(@$self);
+    &Language::Mumps::Func::PIECE(@$self);
 }
 
 sub STORE {
@@ -1638,7 +1667,7 @@ sub STORE {
 }
 
 
-package Mumps::Forest;
+package Language::Mumps::Forest;
 
 sub TIEHASH {
     bless {'dbs' => {}}, shift;
@@ -1647,7 +1676,7 @@ sub TIEHASH {
 sub FETCH {
     my ($self, $key) = @_;
     my $dbs = $self->{'dbs'};
-    $dbs->{$key} ||= &Mumps::dbs($key);
+    $dbs->{$key} ||= &Language::Mumps::dbs($key);
     $dbs->{$key};
 }
 
@@ -1677,14 +1706,14 @@ Mumps - Perl module to translate Mumps programs to perl scripts
 
 =head1 SYNOPSIS
 
-use Mumps;
+use Language::Mumps;
 
-$pcode = Mumps::compile(qq{\tw "Hello world!",!\n\th});
+$pcode = Language::Mumps::compile(qq{\tw "Hello world!",!\n\th});
 eval $pcode;
 
-Mumps::evaluate(qq{\ts x=1 w x});
+Language::Mumps::evaluate(qq{\ts x=1 w x});
 
-Mumps::interprete("example.mps");
+Language::Mumps::interprete("example.mps");
 
 Mumps:translate("example.mps", "example.pl");
 B<prompt %> C<perl example.pl>
