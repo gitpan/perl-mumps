@@ -3,7 +3,7 @@
 # However, any modifications should be notified to the author
 # Email: mumps@atheist.org.il
 
-$VERSION = 1.02;
+$VERSION = 1.04;
 
 package Mumps;
 use Fcntl;
