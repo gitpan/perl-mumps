@@ -4,4 +4,6 @@ use ExtUtils::MakeMaker;
 WriteMakefile(
     'NAME'	=> 'Mumps',
     'VERSION_FROM' => 'Mumps.pm', # finds $VERSION
+    'EXE_FILES' => ['pmumps'],
+    'clean' => {'FILES' => "\$(DISTVNAME)/ pmumps"},
 );

@@ -1,9 +1,18 @@
+# PerlMUMPS by Ariel Brosh
+# Usage is free, including commercial use, enterprise and legacy use
+# However, any modifications should be notified to the author
+# Email: mumps@atheist.org.il
+
+$VERSION = 1.02;
+
 package Mumps;
-
-# This is a pre-release of Perl Mumps. It is a working but buggy version.
-# Newer version will be uploaded soon.
-
-$VERSION = "0.01";
+use Fcntl;
+use strict vars;
+use vars qw($FETCH $STORE $DB $SER $IMPORT @TYING $xpos $ypos
+  %symbols $selected_io $flag @handlers @xreg @yreg
+  $curses_inside $varstack %RES $RESKEYS %COMMANDS $scope_do
+  %FUNCTIONS %FUNS @tmpvars $tmphash $infun $scopes @stack
+  @program %bookmarks $lnum $forgiveful $forscope %dbs);
 
 %COMMANDS = qw(B BREAK C CLOSE D DO E ELSE F FOR G GOTO HALT HALT
                H HANG I IF J JOB K KILL L LOCK O OPEN Q QUIT
@@ -76,6 +85,8 @@ $VERSION = "0.01";
 
 sub m2pl {
     my $line = shift;
+
+    $line =~ s/^(\w+) {8}/$1\t/ if ($forgiveful);
     if ($line =~ s/^\%//) {
         return "$line\n";
     }
@@ -85,8 +96,10 @@ sub m2pl {
     }
 
     unless ($line =~ /\t/) {
-        return "print '$line';\n";
+        return "Mumps::write('$line');\n";
     }
+
+    &resetvars;
 
     my ($label, $llin) = split(/\t+/, $line, 2);
     $line = $llin;
@@ -139,7 +152,7 @@ sub ml2pl {
 success:
         $code .= "$pre$res$post\n";
     }
-    "$label$code";
+    $code;
 }
 
 sub compile {
@@ -150,9 +163,9 @@ sub compile {
     local($scopes);
     $lnum = 0;
     my @code = map {++$lnum; "# $lnum) $_\n" . &m2pl($_);} @lines;
-    push(@code, &m2pl("\tQUIT"));
     die "Unclosed brackets" if ($scopes);
-    join("", "use Mumps qw(Runtime $IMPORT);\n",  @code);
+    join("", "use Mumps qw(Runtime $IMPORT);\nno strict;\n",  @code,
+              "### end\n", &m2pl("\tQUIT"));
 }
 
 sub evaluate {
@@ -213,8 +226,8 @@ EOM
 
 sub DO ($) {
     if ($_[0] =~ s/^\s*([a-z]\w*)\b//i) {
-        ++$labels_do;
-        $lbl = "__lbl_do_Mumps_$labels_do";
+        ++$scope_do;
+        my $lbl = &nextvar("d$scope_do");
         return <<EOM;
 push(\@Mumps::stack, '$lbl');
 goto __lbl_Mumps_$1;
@@ -247,23 +260,19 @@ sub FOR ($) {
     unless ($_[0]) {
         die "Iterator expected in FOR";
     }
-    my $cnt = 0;
-    ++$for_proc;
-    my $varscope = "for$for_proc";
     my ($itercode, $lvar) = &makevar($_[0]);
     my $var = $lvar->lval;
-    my $itervar = "__mumps_tmp_$varscope\_iter";
-    my $eachlist = "\@__mumps_tmp_$varscope\_each";
-    my $f = "\$__mumps_tmp_$varscope\_from";
-    my $t = "\$__mumps_tmp_$varscope\_to";
-    my $s = "\$__mumps_tmp_$varscope\_step";
+    my $itervar = &nextvar();
+    my $eachlist = &nextvar('@');
+    my $f = &nextvar('$');
+    my $t = &nextvar('$');
+    my $s = &nextvar('$');
     $itercode .= "*$itervar = \\$var;\n";
     $var = "\$$itervar";
     die "= expected in FOR" unless ($_[0] =~ s/^\=//);
-    my $procname = "__Mumps_intern_$for_proc\_for";
-    my $flag;
+    my $procname = "__tmpfor" . ++$forscope;
+    my ($flag, $listflag);
     my $first = 1;
-    $itercode .= "{ my ($eachlist, $f, $t, $s);\n";
     while (1) {
         $flag = 1 unless ($_[0] && $_[0] !~ /^\s/);
         die "Comma expected in FOR" unless ($first || $_[0] =~ s/^,// || $flag);
@@ -271,9 +280,9 @@ sub FOR ($) {
         my ($code, $val) = &makeexp($_[0]);
         if ($flag || $_[0] =~ s/^\://) {
             $itercode .= "foreach \$var ($eachlist) " .
-                 "{&$procname;}\n\$eachlist = ();\n" if (@ary);
-            @ary = ();
+                 "{&$procname;}\n\$eachlist = ();\n" if ($listflag);
             last if ($flag);
+            $listflag = undef;
             $itercode .= $code;
             $itercode .= "$f = $val;\n";
 
@@ -287,23 +296,23 @@ sub FOR ($) {
                 $itercode .= $code;
                 $itercode .= "$t = $val;\n";
             } else {
-                $itercode .= "$t = $f - $s;\n";
+                $itercode .= "$t = $f - $s * 2;\n";
             }
 #            my $sign = (qw(< == >))[($f <=> $t) + 1];
 #            my $step = (qw(+ + -))[($f <=> $t) + 1];
 #            my $cond = ($t ? "$var $sign $t" : 1);
 #            my $incr = (abs($s) == 1) ? ($var . ($step x 2))
 #                    : "$var $step= " . abs($s);
-            my $for = "($var = $f; " .
+            my $for = "($var = $f, $t += $s; " .
               "$var != $t && ($var <=> $t) == ($f <=> $t); " .
               "$var += $s)";
             $itercode .= "for $for {\&$procname;}\n";
         } else {
             $itercode .= $code . "push($eachlist, $val);\n";
-            push(@ary, $val);
+            $listflag = 1;
         }
     }
-    $itercode .= "}\n";
+    $itercode .= "*$itervar = \\\$sysundef;\n";
     $_[0] =~ s/^\s*//;
     die "Code expected in FOR" unless ($_[0]);
     $itercode .= "sub $procname {\n";
@@ -360,8 +369,7 @@ sub KILL ($) {
     my $rev;
     my $thecode;
     my $cond = "if";
-    $killscope++;
-    my $tmptbl ="__tmp_mumps_$killscope";
+    my $tmptbl = &nextvar();
     if ($_[0] =~ s/^\(//) {
         $rev = 1;
     }
@@ -382,7 +390,7 @@ sub KILL ($) {
         $thecode .= <<EOM;
 \%Mumps::symbol = ();
 foreach (keys \%$tmptbl) {
-    \$Mumps::symbol{\$_} = \$$tmptbl{\$_};
+    \$Mumps::symbol{\$_} = \$$tmptbl\{\$_};
 }
 EOM
     }
@@ -401,10 +409,9 @@ EOM
     }
     my ($code, $var) = &makevar($_[0]);
     die "Only one array can be LOCKed" if ($_[0] && $_[0] !~ /^\s/);
-    my $cnt = 0;
     my $ext = $var->getdb;
-    my $tdb = &nextvar($cnt, 'lock', '$');
-    my $fd = &nextvar($cnt, 'lock', '$');
+    my $tdb = &nextvar('$');
+    my $fd = &nextvar('$');
 return <<EOM;
 $tdb = $ext;
 $fd = $tdb->fd;
@@ -414,11 +421,10 @@ EOM
 }
 
 sub OPEN ($) {
-    my $cnt = 0;
-    my $opennum = &nextvar($cnt, 'open', '$');
-    my $tokens = &nextvar($cnt, 'open', '@');
-    my $ofn = &nextvar($cnt, 'open', '$');
-    my $omet = &nextvar($cnt, 'open', '$');
+    my $opennum = &nextvar('$');
+    my $tokens = &nextvar('@');
+    my $ofn = &nextvar('$');
+    my $omet = &nextvar('$');
     my ($code, $var) = &makeexp($_[0]);
     die ": expected in OPEN" unless ($_[0] =~ s/^\://);
     $code .= "$opennum = $var;\n";
@@ -479,9 +485,9 @@ sub SET ($) {
         my $var = $lvar->lval;
         die "= expected in SET" unless ($_[0] =~ s/^\=//);
         my ($code2, $val) = &makeexp($_[0]);
-        my $lval = &nextvar($setscope, "set", "");
+        my $lval = &nextvar("");
         $result .= $code . "*$lval = \\$var;\n" .
-                $code2 . "\$$lval = $val;\n*$lval = undef\n";
+                $code2 . "\$$lval = $val;\n*$lval = \\\$sysundef;\n";
     }
     $result;
 }
@@ -537,9 +543,9 @@ sub ZFUNCTION ($) {
       die "Incorrect function header in ZFUNCTION" unless (@tokens);
       die "Cannot nest functions in ZFUNCTION" if ($infun++ > 1);
       my $fun = shift @tokens;
-      $tmphash = &nextvar($funn, "fun", "");
+      $tmphash = &nextvar("");
       @tmpvars = @tokens;
-      my $code .= "sub $fn {\nmy \%$tmphash;\n";
+      my $code .= "sub $fun {\nmy \%$tmphash;\n";
       foreach (@tokens) {
           my $obj = new Mumps::var;
           $obj->name($_);
@@ -552,7 +558,7 @@ sub ZFUNCTION ($) {
 sub ZRETURN ($) {
     die "Not in a function in ZRETURN" unless ($infun--);
     my ($code, $var) = &makeexp($_[0]);
-    foreach (@tempvars) {
+    foreach (@tmpvars) {
           my $obj = new Mumps::var;
           $obj->name($_);
           my $var = $obj->lval;
@@ -567,22 +573,25 @@ sub makevar ($) {
 }
 
 sub makevar2 ($$) {
-    my ($code, $obj, $val, $var, $isfun);
+    my ($code, $obj, $val, $var, $isfun, $extra);
     ++$_[1];
     if ($_[0] =~ s/^\$//) {
         $obj = new Mumps::Func;
         $isfun = 1;
+        $extra = '$';
     } elsif ($_[0] =~ s/^\^//) {
         $obj = new Mumps::Database;
+    } elsif ($_[0] =~ s/^\&//) {
+        $obj = new Mumps::Freevar;
     } else {
+        $extra = '%';
         $_[0] =~ s/^\@//;
         $obj = new Mumps::Var;
     }
-    die "Illegal array name" unless ($_[0] =~ /[\%a-z]/i);
-    $_[0] =~ s/^([\%a-z]\w*)//i;
-    my $alias = uc($1);
-    $alias = $FUNCTIONS{$alias} || $alias if ($isfun);
-    $obj->name(uc($alias));
+    die "Illegal array name" unless ($_[0] =~ /[a-z$extra]/i);
+    $_[0] =~ s/^([a-z$extra]\w*)//i;
+    my $alias = $1;
+    $alias = $FUNCTIONS{uc($alias)} || $alias if ($isfun);
     my $this;
     if ($_[0] =~ s/^\(//) {
         unless ($isfun) {
@@ -592,7 +601,7 @@ sub makevar2 ($$) {
         }
         if ($alias =~ s/^(\$)//) {
               ($code, $var) = &makelist2($_[0], $_[1], $_[2] + 1);
-              bless $obj, Mumps::Primitive;
+              bless $obj, 'Mumps::Primitive';
               goto regular;
         }
         my $opt = $FUNS{$alias};
@@ -605,7 +614,7 @@ sub makevar2 ($$) {
             eval {
                 ($code, $var) = &makelist2($line, $_[1], $_[2] + 1,
                    $obj->prot);
-                die "No closing brackets" unless ($line =~ s/^\)//);
+                die "No closing brackets" unless ($line =~ /^\)/);
             };
             goto success unless ($@);
         }
@@ -614,6 +623,7 @@ success:
         $_[0] = $line;
 regular:
         $obj->list($var);
+        die "No closing brackets" unless ($_[0] =~ s/^\)//);
     } elsif ($isfun) {
         my $opt = $FUNS{$alias};
         die "Illegal function $alias" unless (@$opt);
@@ -624,6 +634,7 @@ regular:
         die "Function $alias requires parameters";
 day:
     }
+    $obj->name($alias);
     ($code, $obj);
 }
 
@@ -636,7 +647,8 @@ sub makeexp2 ($$) {
     my ($step);
     my $scope = ++$_[1];
     my ($result, $sum);
-    my $var = &nextvar($step, $scope, '$');
+    my $var = &nextvar('$');
+    my $negation;
     while ($_[0] && $_[0] !~ /^(\,|\s|\:)/) {
         my ($val, $code);
         $_[0] =~ s/^(.)//;
@@ -685,22 +697,24 @@ sub makeexp2 ($$) {
                 $val .= $ch;
             }
             die "Illegal number" unless ($val =~ /\d$/);
-        } elsif ($ch =~ /[a-z\$\^\@\%/i) {
+        } elsif ($ch =~ /[a-z\$\^\@\%\&]/i) {
             $_[0] = $ch . $_[0];
             ($code, $val) = &makevar2($_[0], $_[1], $_[2]);
             $val = $val->rval;
-        } elsif ($ch =~ /'-/) {
+        } elsif ($ch =~ /['-]/) {
             $ch =~ s/'/!/;
-            ($code, $val) = &makeexp2($_[0], $_[1], $_[2]);
-            $val = "$ch$val";
+            $negation = $ch;
+            next;
         }
         if (defined($val)) {
             $result .= $code;
-            $result .= "$var = $val;\n";
+            $result .= "$var = $negation$val;\n";
             $result .= "$sum\n" if ($sum);
             $sum = undef;
+            $negation = undef;
             next;
         }
+        die "Left operand expected" if ($sum);
         if ($ch eq ')') {
             $_[0] = $ch . $_[0];
             last if ($_[2]);
@@ -711,7 +725,7 @@ sub makeexp2 ($$) {
             die "No closing brackets" unless ($_[0] =~ /^\)/);
         }
         my $oldvar = $var;
-        $var = &nextvar($step, $scope, '$');
+        $var = &nextvar('$');
         my $qch = quotemeta($ch);
         if ("+-*/!&_" =~ /$qch/) {
             $ch =~ s/\!/||/;
@@ -754,7 +768,7 @@ sub makelist2 ($$) {
     my ($step);
     my $scope = ++$_[1];
     my ($result, $sum);
-    my $var = &nextvar($step, $scope, '@');
+    my $var = &nextvar('@');
     my $lbl = "__lbl_$var";
     $lbl =~ s/[^a-z]/_/g;
     my $i;
@@ -769,7 +783,7 @@ sub makelist2 ($$) {
         $typ =~ s/[IL]//;
         $proto = 'L' if ($typ eq 'L');
         $proto = 'T' if ($typ eq 'T');
-        %procs = ("", sub($$) {&makeexp2($_[0], $_[1], $_[2])},
+        my %procs = ("", sub($$) {&makeexp2($_[0], $_[1], $_[2])},
                   "O", sub ($$) {
                       my ($code, $var) = &makevar2($_[0], $_[1], $_[2]);
                       ($code, $var->sig);},
@@ -781,7 +795,7 @@ sub makelist2 ($$) {
    die "Source anchor expected" unless ($_[0] =~ s/^(\d+|(?:[a-z]\w*)?\+\d+|[a-z]\w*)//i);
                     my ($lbl, $off) = split(/\+/, $1);
                     $off *= 1;
-                    my $var = &nextvar($srcscope, "source", '$');
+                    my $var = &nextvar('$');
                     ("$var = &Mumps::list('$lbl', $off);\n", $var);}
                   );
         my ($code, $val) = &{$procs{$typ}}($_[0], $_[1], $_[2]);
@@ -806,8 +820,6 @@ sub maketuple ($) {
 sub maketuple2 ($$) {
     my ($done, $result);
     ++$_[1];
-    ++$tuplescope;
-    my $cnt = 0;
     my @ary;
     my $first = 1;
     my $delim = quotemeta($_[4]);
@@ -815,7 +827,7 @@ sub maketuple2 ($$) {
         die "$_[4] expected" unless ($first || $_[0] =~ s/^$delim//);
         $first = undef;
         my ($code, $var) = &makeexp2($_[0], $_[1], $_[2]);
-        my $save = &nextvar($cnt, "tuple$tuplescope", '$');
+        my $save = &nextvar('$');
         $result .= $code . "$save = $var;\n";
         push(@ary, $var);
     }
@@ -856,9 +868,15 @@ sub makeregexp {
     $result;
 }
 
-sub nextvar ($) {
-    $_[0]++;
-    "$_[2]Mumps::__tmp_$_[1]_$_[0]";
+sub nextvar {
+    my $pre = shift;
+    $varstack++;
+    my $sc = "_" x $scopes;
+    "$pre$sc\__tmp$varstack";
+}
+
+sub resetvars {
+    $varstack = 0;
 }
 
 sub curse {
@@ -894,6 +912,7 @@ sub read {
 sub write {
     my $file = ($selected_io == 5) ? \*STDOUT : $handlers[$selected_io];
     my $item = shift;
+    return unless (defined($item));
     if ($item->[0] eq ('cls')) {
         &cls;
         next;
@@ -920,7 +939,7 @@ sub tab {
     if ($xpos > $to) {
         &write("\n");
     }
-    my $dist = $to - $xposo;
+    my $dist = $to - $xpos;
     &write(' ' x $dist);
 }
 
@@ -929,8 +948,8 @@ sub import {
     my $state;
     foreach $state (@_) {
         if ($state eq "Runtime") {
-            my %backend;
-            tie %symbols, 'Mumps::Tree', \%backend;
+            tie %symbols, 'Mumps::Tree';
+            tie %dbs, 'Mumps::Forest';
             $selected_io = 5;
         }
         if ($state =~ /^[SNG]?DBM?_File$/) {
@@ -938,14 +957,14 @@ sub import {
             eval "require $state; import $state;";
             die $@ if ($@);
             @TYING = (O_RDWR|O_CREAT, 0644,
-                 ($state eq 'DB_File') ? ($DB_FILE) : ());
+                 ($state eq 'DB_File') ? ($DB_File::DB_FILE) : ());
             $DB = $state;
         }
         if ($state eq 'Data::Dumper') {
             $@ = undef;
             eval "require $state; import $state;";
             die $@ if ($@);
-            $FETCH = sub {eval $_[0];};
+            $FETCH = sub {no strict; eval $_[0];};
             $STORE = \&Data::Dumper::Dumper;
             $SER = $state;
         }
@@ -963,13 +982,12 @@ sub import {
 
 sub dbs {
     my $db = shift;
-    unless (tied %$db) {
-        tie %{"__$db"}, $DB, "global/$db.db", @TYING;
-        my $t = tie %$db, 'Mumps::Tree', \%{"__$db"}, $FETCH,
-            $STORE;
-        $forest{$db} = $t;
-    }
-    \%$db;
+    my $dbt = "Mumps::DB::_$db";
+    my $dbf = "Mumps::DB::Back::_$db";;
+    tie(%$dbf, $DB, "global/$db.db", @TYING) || die "DB: $!";
+    my $t = tie %$dbt, 'Mumps::Tree', \%$dbf, $FETCH,
+        $STORE;
+    \%$dbt;
 }
 
 sub moveimage {
@@ -980,14 +998,6 @@ sub moveimage {
     foreach (@children) {
         &moveimage($src, $dst, "$key\0$_");
     }
-}
-
-sub killforest {
-    foreach (keys %forest) {
-          untie %$_;
-          undef $forest{$_};
-    }
-    %forest = ();
 }
 
 package Mumps::Tree;
@@ -1018,17 +1028,26 @@ sub STORE {
     } while (@tokens);
     my $flag;
     my $base = &$fetch($hash->{$addr}) || ++$flag && {};
-    ($base->{'data'} ne $val) && ++$flag && ($base->{'data'} = $val);
+    ($base->{'data'} eq $val) || ++$flag && ($base->{'data'} = $val);
     $hash->{$addr} = &$store($base) if ($flag);
 }
 
 sub FETCH {
     my ($self, $key, $val) = @_;
     my $hash = $self->{'hash'};
-    my $store = $self->{'store'};
     my $fetch = $self->{'fetch'};
+    return undef unless ($hash->{$key});
     my $base = &$fetch($hash->{$key}) || {};
     $base->{'data'};
+}
+
+sub EXISTS {
+    my ($self, $key) = @_;
+    my $hash = $self->{'hash'};
+    my $fetch = $self->{'fetch'};
+    return undef unless ($hash->{$key});
+    my $base = &$fetch($hash->{$key}) || {};
+    (exists $base->{'data'});
 }
 
 sub query {
@@ -1056,23 +1075,30 @@ sub DELETE {
     delete $hash->{$key}->{'metadata'}->{$1};
 }
 
+sub extrapolate {
+    my ($self, $key) = @_;
+    my @sons = $self->query($key);
+    my %recur = map {$self->extrapolate($_);} @sons;
+    $recur{$key} = $self->FETCH($key) if ($self->EXISTS($key));
+    %recur;
+}
+
 sub FIRSTKEY {
     my $self = shift;
-    my $hash = $self->hash;
-    keys %$hash;
-    each %$hash;
+    $self->{'keys'} = {$self->extrapolate("")};
+    $self->NEXTKEY;
 }
 
 sub NEXTKEY {
-    my $self = shift;
-    my $hash = $self->hash;
-    each %$hash;
+    my ($self, $lastkey) = @_;
+    each %{$self->{'keys'}};
 }
 
 sub TIEHASH {
     my ($class, $hash, $fetch, $store) = @_;
     $fetch ||= sub {$_[0];};
     $store ||= sub {$_[0];};
+    $hash ||= {};
     my $self = {'hash' => $hash, 'store' => $store, 'fetch' => $fetch};
     bless $self, $class;
 }
@@ -1080,19 +1106,29 @@ sub TIEHASH {
 package Mumps::Entity;
 
 sub new {
-    bless {'list' => '()'}, shift;
+    bless {}, shift;
+}
+
+sub case {
+    my $class = ref(shift);
+    ${$class . "::CASE"};
 }
 
 sub name {
     my $self = shift;
     $self->{'name'} = shift if (@_);
-    $self->{'name'};
+    $self->case ? $self->{'name'} : uc($self->{'name'});
 }
 
 sub list {
     my $self = shift;
     $self->{'list'} = shift if (@_);
-    $self->{'list'};
+    $self->{'list'} || '()';
+}
+
+sub isatom {
+    my $self = shift;
+    $self->{'list'} ? undef : 1;
 }
 
 sub rval {
@@ -1101,7 +1137,8 @@ sub rval {
 }
 
 sub lval {
-     die "Abstract";
+    my $self = shift;
+    '${' . $self->hash . '}{' . $self->addr . '}';
 }
 
 sub purge {
@@ -1122,14 +1159,9 @@ sub sig {
 }
 
 package Mumps::Var;
+use vars qw(@ISA);
 @ISA = qw(Mumps::Entity);
 
-sub lval {
-    my $self = shift;
-    my $name = $self->name;
-    my $list = $self->list;
-    "\$Mumps::symbols{'$name', $list}";
-}
 
 sub purge {
     my $self = shift;
@@ -1146,11 +1178,13 @@ sub addr {
     my $self = shift;
     my $list = $self->list;
     my $name = $self->name;
-    qq!join("\0", '$name', $list)!;
+    $self->isatom ? "'$name'" : qq!join("\\0", '$name', $list)!;
 }
 
 package Mumps::Primitive;
+use vars qw(@ISA $CASE);
 @ISA = qw(Mumps::Entity);
+$CASE = 1;
 
 sub lval {
     die "Can't use functions as Lvalue";
@@ -1159,46 +1193,63 @@ sub lval {
 sub rval {
     my $self = shift;
     my $name = $self->name;
-    my $list = $name->list;
+    my $list = $self->list;
     "$name($list);";
 }
 
 package Mumps::Database;
+use vars qw(@ISA);
 @ISA = qw(Mumps::Entity);
-
-sub lval {
-    my $self = shift;
-    my $list = $self->list;
-    my $name = $self->name;
-    "(&Mumps::dbs('$name'))->{$list}";
-}
 
 sub purge {
     my $self = shift;
     my $list = $self->list;
     my $name = $self->name;
-    "delete (&Mumps::dbs('$name'))->{$list}";
+    "delete \$Mumps::dbs{'$name'}->{$list}";
 }
 
 sub getdb {
     my $self = shift;
     my $name = $self->name;
-    "tied(%{(tied(&Mumps::dbs('$name')))->{'hash'}})";
+    "tied(\%{tied(\$Mumps::dbs{'$name'})->{'hash'}})";
 }
 
 sub hash {
     my $self = shift;
     my $name = $self->name;
-    "\%{&Mumps::dbs('$name')}";
+    "\$Mumps::dbs{'$name'}";
 }
 
 sub addr {
     my $self = shift;
     my $list = $self->list;
-    qq!join("\0", $list)!;
+    qq!join("\\0", $list)!;
+}
+
+package Mumps::Freevar;
+use vars qw(@ISA $CASE);
+@ISA = qw(Mumps::Entity);
+$CASE = 1;
+
+sub lval {
+    my $self = shift;
+    my $name = $self->name;
+    $self->isatom ? "\$$name" : $self->SUPER::lval;
+}
+
+sub hash {
+    my $self = shift;
+    $self->name;
+}
+
+sub addr {
+    my $self = shift;
+    my $list = $self->list;
+    qq!join("\\0", $list)!;
 }
 
 package Mumps::Func;
+use vars qw(@ISA @zwi_tokens);
 @ISA = qw(Mumps::Entity);
 
 sub prot {
@@ -1211,7 +1262,7 @@ sub lval {
     my $self = shift;
     my $name = $self->name;
     my $prot = $self->prot;
-    my $opt = $FUNS{$name};
+    my $opt = $Mumps::FUNS{$name};
     my $rec;
     foreach $rec (@$opt) {
         last if ($rec->{'prot'} eq $prot);
@@ -1227,10 +1278,6 @@ sub rval {
     "&Mumps::Func::$name($list)";
 }
 
-sub scope {
-    ++$fnscope;
-    "__tmp_mumps_$fnscope";
-}
 
 sub ASCII {
     my ($str, $pos) = @_;
@@ -1307,9 +1354,10 @@ sub NEXT {
     my ($hash, $addr) = @{$_[0]};
     my @tokens = split(/\0/, $addr);
     my $right = pop @tokens;
-    my @sons = sort @{tied(%$hash)->query(join("\0", @tokens))};
+    my @sons = sort (tied(%$hash)->query(join("\0", @tokens)));
+    return $sons[0] if ($right == -1);
     foreach (@sons) {
-        return $_ if ($_ ge $right || $right == -1);
+        return $_ if ($_ gt $right);
     }
     return -1;
 }
@@ -1390,36 +1438,36 @@ sub ZB {
 }
 
 sub ZCD {
-    my $fn = (shift) || substr(time, 0, 8) . ".dmp";
+    my $fn = shift || substr(time, 0, 8) . ".dmp";
     my $forest = {};
-    foreach (glob "globals/*.db") {
-        s|^globals/||;
-        s/\.db$//;
-        $forest->{$_} = &Mumps::dbs($_);
+    foreach ((glob "global/*.db"), (glob "global/*.db.*")) {
+        s|^global/||;
+        s/\.db.*$//;
+        next if ($forest->{$_});
+        $forest->{$_} = {%{$Mumps::dbs{$_}}};
     }
     open(DUMP, ">$fn");
-    print DUMP &$STORE($forest);
+    print DUMP &$Mumps::STORE($forest);
     close(DUMP);
-    &Mumps::killforest;
+    %Mumps::dbs = ();
     !$!;
 }
 
 sub ZCL {
-    my $fn = (shift) || "dump";
-    &Mumps::killforest;
+    my $fn = shift || "dump";
+    %Mumps::dbs = ();
     open(LOAD, $fn);
     binmode LOAD;
     my $buffer;
     while (read(LOAD, $buffer, 8192, length($buffer))) {}
     close(LOAD);
-    my $forest = &$FETCH($buffer);
+    my $forest = &$Mumps::FETCH($buffer);
     undef $buffer;
     foreach (keys %$forest) {
         unlink "global/$_.db";
-        my $hash = &Mumps::dbs($_);
-        %$hash = %{$forest->{$_}};
+        %{$Mumps::dbs{$_}} = %{$forest->{$_}};
     }
-    &Mumps::killforest;
+    %Mumps::dbs = ();
 }
 
 sub ZD {
@@ -1444,7 +1492,7 @@ sub ZD3 {
 
 sub ZD4 {
     my ($y, $dy) = @_;
-    @mon = qw(31 28 31 30 31 30 31 31 30 31 30 31);
+    my @mon = qw(31 28 31 30 31 30 31 31 30 31 30 31);
     my $m;
     while ($dy > $mon[$m]) {$dy -= $mon[$m++];}
     join(" ", $y, $m + 1, $dy);
@@ -1489,7 +1537,7 @@ sub ZDBI {
     my $sth = $dbh->prepare($query) || die $DBI::errstr;
     $sth->execute || die $DBI::errstr;
     my ($i, $rec, $glb);
-    $glb = &Mumps::dbs($1) if ($ary =~ /^\^(.*)$/);
+    $glb = $Mumps::dbs{$1} if ($ary =~ /^\^(.*)$/);
     
     while ($rec = $sth->fetchrow_array) {
         $Mumps::symbol{"%tpl", ++$i} = join("\\", @$rec);
@@ -1545,7 +1593,7 @@ sub ZSQR {
 }
 
 sub ZT {
-    my $file = ($selected_io == 5) ? \*STDIN : $handlers[$selected_io];
+    my $file = ($Mumps::selected_io == 5) ? \*STDIN : $Mumps::handlers[$Mumps::selected_io];
     tell($file);
 }
 
@@ -1581,7 +1629,7 @@ sub STORE {
     my ($self, $val) = @_;
     my ($var, $delim, $from) = @$self;
     my ($hash, $addr) = @$var;
-    $str = $hash->{$addr};
+    my $str = $hash->{$addr};
     $delim = quotemeta($delim);
     my @tokens = split(/$delim/, $str);
     $tokens[$from - 1] = $val;
@@ -1589,3 +1637,86 @@ sub STORE {
     $hash->{$addr} = $str;
 }
 
+
+package Mumps::Forest;
+
+sub TIEHASH {
+    bless {'dbs' => {}}, shift;
+}
+
+sub FETCH {
+    my ($self, $key) = @_;
+    my $dbs = $self->{'dbs'};
+    $dbs->{$key} ||= &Mumps::dbs($key);
+    $dbs->{$key};
+}
+
+sub DELETE {
+    my ($self, $key) = @_;
+    my $dbs = $self->{'dbs'};
+    my $hash = $dbs->{$key};
+    untie %$hash;
+}
+
+sub CLEAR {
+    my ($self, $key) = @_;
+    my $dbs = $self->{'dbs'};
+    my $hash;
+    foreach $hash (keys %$dbs) {
+        untie %$hash;
+    }
+    delete $self->{'dbs'};
+}
+__END__
+
+__END__
+# Documentation
+=head1 NAME
+
+Mumps - Perl module to translate Mumps programs to perl scripts
+
+=head1 SYNOPSIS
+
+use Mumps;
+
+$pcode = Mumps::compile(qq{\tw "Hello world!",!\n\th});
+eval $pcode;
+
+Mumps::evaluate(qq{\ts x=1 w x});
+
+Mumps::interprete("example.mps");
+
+Mumps:translate("example.mps", "example.pl");
+B<prompt %> C<perl example.pl>
+
+=head1 DESCRIPTION
+
+This module compiles Mumps code to Perl code. The API is simillar to
+MumpsVM.
+
+=head1 ENVIRONMENT
+
+Edit ~/.pmumps or /etc/pmumps to set up persistent arrays.
+
+=head1 FILES
+
+=over 6
+
+=item F<$BINDIR/pmumps>
+ Interpreter
+
+=item F<~/.pmumps>
+ User configuration
+
+=item F</etc/pmumps.cf>
+ Site configuration
+
+=back
+
+=head1 AUTHOR
+
+Ariel Brosh, B<schop@cpan.org>
+
+=head1 SEE ALSO
+
+L<pmumps>, L<DB_File>.  

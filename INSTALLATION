@@ -1,0 +1,7 @@
+Installation of Perl Mumps:
+
+perl Makefile.PL
+make
+make install
+vi mumps.cfg
+cp mumps.cfg /etc/pmumps.cf
