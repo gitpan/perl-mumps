@@ -969,6 +969,13 @@ sub import {
             $FETCH = sub {no strict; eval $_[0];};
             $STORE = \&Data::Dumper::Dumper;
             $SER = $state;
+        } elsif ($state eq 'Data::Dump') {
+            $@ = undef;
+            eval "require $state; import $state;";
+            die $@ if ($@);
+            $STORE = \&Data::Dump::dump;
+            $FETCH = sub {no strict; eval $_[0];};
+            $SER = $state;
         } elsif ($state eq 'FreezeThaw' || $state eq 'Storable') {
             $@ = undef;
             eval "require $state; import $state;";
@@ -976,7 +983,7 @@ sub import {
             $FETCH = \&{"$SER\::thaw"};
             $STORE = \&{"$SER\::freeze"};
             $SER = $state;
-        } elsif ($state eq 'XML') {
+        } elsif ($state eq 'XML::Dumper') {
             $@ = undef;
             eval "require XML::Parser; import XML::Parser;";
             eval "require XML::Dumper; import XML::Dumper;";
@@ -989,6 +996,15 @@ sub import {
                 my $tree = $parser->parse($xml);
                 $Language::Mumps::Pool::XML->xml2pl($tree); };
             $STORE = sub { $Language::Mumps::Pool::XML->pl2xml(shift); };
+            $SER = $state;
+        } elsif ($state eq 'Data::DumpXML') {
+            $@ = undef;
+            eval "require Data::DumpXML; import Data::DumpXML;";
+            eval "require Data::DumpXML::Parser; import Data::DumpXML::Parser;";
+            $Language::Mumps::Pool::XML = Data::DumpXML::Parser;
+            die $@ if ($@);
+            $STORE = \&Data::DumpXML::dump_xml;
+            $FETCH = sub { $Language::Mumps::Pool::XML->parse(@_); };
             $SER = $state;
         } elsif ($state eq 'Config') {
             require "/etc/pmumps.cf" if (-f "/etc/pmumps.cf");
